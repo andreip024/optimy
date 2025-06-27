@@ -1,0 +1,432 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Optimy PHP APP with ECS Auto Scaling
+
+Parameters:
+  ContainerImage:
+    Type: String
+    Default: php:8.2-apache
+  DBUsername:
+    Type: String
+  DBPassword:
+    Type: String
+    NoEcho: trueMore actions
+  DBName:
+    Type: String
+  AWSRegion:
+    Type: String
+  GHTokenArn:
+    Type: String
+
+Resources:
+  ### VPC & INTERNET GATEWAY ###
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: cf-optimy-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  ### PUBLIC SUBNETS & ROUTING ###
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Sub "${AWSRegion}a"
+      MapPublicIpOnLaunch: true
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Sub "${AWSRegion}b"
+      MapPublicIpOnLaunch: true
+
+  PublicSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Sub "${AWSRegion}c"
+      MapPublicIpOnLaunch: true
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicRouteTableAssociation3:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet3
+      RouteTableId: !Ref PublicRouteTable
+
+  ### PRIVATE SUBNETS ###
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: !Sub "${AWSRegion}a"
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.5.0/24
+      AvailabilityZone: !Sub "${AWSRegion}b"
+
+  PrivateSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.6.0/24
+      AvailabilityZone: !Sub "${AWSRegion}c"
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PrivateRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateRouteTableAssociation3:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet3
+      RouteTableId: !Ref PrivateRouteTable
+
+  ### SECURITY GROUPS ###
+  OptimySecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: cf-optimy-optimy-sg
+      GroupDescription: Allow HTTP and DB access
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  AuroraSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: cf-optimy-aurora-sg
+      GroupDescription: Allow ECS to access Aurora
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref OptimySecurityGroup
+
+  ### RDS AURORA CLUSTER ###
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: cf-optimy-db-subnet-group
+      DBSubnetGroupDescription: Subnet group for Aurora
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+        - !Ref PrivateSubnet3
+
+  DBCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      DBClusterIdentifier: cf-optimy-db-cluster
+      Engine: aurora-mysql
+      EngineVersion: "8.0.mysql_aurora.3.04.0"
+      EngineMode: provisioned
+      DatabaseName: !Ref DBName
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref AuroraSecurityGroup
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: 0.5
+        MaxCapacity: 2
+
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: cf-optimy-db-writer
+      DBClusterIdentifier: !Ref DBCluster
+      DBInstanceClass: db.serverless
+      Engine: aurora-mysql
+
+  # Reader Instance
+  DBReaderInstance:
+    Type: AWS::RDS::DBInstance
+    DependsOn: DBInstance
+    Properties:
+      DBInstanceIdentifier: cf-optimy-db-reader
+      DBClusterIdentifier: !Ref DBCluster
+      DBInstanceClass: db.serverless
+      Engine: aurora-mysql
+
+  ### ECS CLUSTER & IAM ROLES ###
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: cf-optimy-ecs-cluster
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: cf-optimy-task-execution-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:cf-optimy-db-username-*
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:cf-optimy-db-password-*
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:cf-optimy-db-name-*
+                  - !Ref GHTokenArn
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: cf-optimy-loggroup
+      RetentionInDays: 7
+
+  ### ALB & TARGET GROUP ###
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: cf-optimy-alb
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+        - !Ref PublicSubnet3
+      SecurityGroups:
+        - !Ref OptimySecurityGroup
+      Type: application
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: cf-optimy-tg
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: ip
+      HealthCheckPath: /
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: ALBTargetGroup
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
+  ### SECRETS FOR DB ###
+  DBUserSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: cf-optimy-db-username
+      SecretString: !Ref DBUsername
+
+  DBPassSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: cf-optimy-db-password
+      SecretString: !Ref DBPassword
+
+  DBNameSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: cf-optimy-db-name
+      SecretString: !Ref DBName
+
+  ### ECS TASK DEFINITION & SERVICE ###
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: cf-optimy-task
+      Cpu: 256
+      Memory: 512
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: optimy
+          Image: !Ref ContainerImage
+          RepositoryCredentials:
+            CredentialsParameter: !Ref GHTokenArn
+          PortMappings:
+            - ContainerPort: 80
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: optimy
+          Environment:
+            - Name: DB_HOST
+              Value: !GetAtt DBCluster.Endpoint.Address
+            - Name: DB_READER_HOST
+              Value: !GetAtt DBCluster.ReadEndpoint.Address
+          Secrets:
+            - Name: DB_USER
+              ValueFrom: !Ref DBUserSecret
+            - Name: DB_PASS
+              ValueFrom: !Ref DBPassSecret
+            - Name: DB_NAME
+              ValueFrom: !Ref DBNameSecret
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - DBCluster
+      - ALBListener
+    Properties:
+      Cluster: !Ref ECSCluster
+      ServiceName: cf-optimy-service
+      DesiredCount: 2
+      LaunchType: FARGATE
+      TaskDefinition: !Ref TaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref PublicSubnet1
+            - !Ref PublicSubnet2
+            - !Ref PublicSubnet3
+          SecurityGroups:
+            - !Ref OptimySecurityGroup
+      LoadBalancers:
+        - TargetGroupArn: !Ref ALBTargetGroup
+          ContainerName: optimy
+          ContainerPort: 80
+
+  ### APPLICATION AUTO SCALING ###
+  ApplicationAutoScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: cf-optimy-appautoscaling-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: application-autoscaling.amazonaws.com
+            Action: sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: AllowECSScaling
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:UpdateService
+                  - ecs:DescribeServices
+                Resource:
+                  Fn::Sub:
+                    - arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/${ClusterName}/${ServiceName}
+                    - ClusterName: !Ref ECSCluster
+                      ServiceName: !GetAtt Service.Name
+
+  ServiceDesiredCountScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: 10
+      MinCapacity: 2
+      ServiceNamespace: ecs
+      ScalableDimension: ecs:service:DesiredCount
+      ResourceId:
+        Fn::Sub:
+          - service/${ClusterName}/${ServiceName}
+          - ClusterName: !Ref ECSCluster
+            ServiceName: !GetAtt Service.Name
+      RoleARN: !GetAtt ApplicationAutoScalingRole.Arn
+
+  ServiceCpuScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: cf-optimy-cpu-scaling-policy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ServiceDesiredCountScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 90.0
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        ScaleInCooldown: 60
+        ScaleOutCooldown: 60
+
+Outputs:
+  DBEndpoint:
+    Description: Aurora DB Endpoint
+    Value: !GetAtt DBCluster.Endpoint.Address
+
+  ECSClusterName:
+    Description: ECS Cluster Name
+    Value: !Ref ECSCluster
+
+  ALBDNS:
+    Description: ALB DNS Name
+    Value: !GetAtt ALB.DNSName

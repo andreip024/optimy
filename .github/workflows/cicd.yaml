@@ -1,0 +1,125 @@
+name: CI/CD Pipeline
+run-name: Run CI/CD Pipeline for optimy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  issues: read
+  contents: write
+  actions: write
+  checks: write
+
+defaults:
+  run:
+    shell: 'bash -Eeuo pipefail {0}'
+
+concurrency:
+  group: ${{ github.ref_name }}
+  cancel-in-progress: false
+
+
+env:
+  PROJECT_NAME: ${{ 'optimy' }}
+
+jobs:
+  build_docker_image:
+    name: Build Docker image
+    runs-on: ubuntu-24.04
+    environment: ${{ 'optimy' }}
+    outputs:
+      image: ${{ steps.image_name.outputs.image }}
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GH_TOKEN }}
+
+      - name: Generate Docker image name
+        id: image_name
+        run: |
+          IMAGE=ghcr.io/${{ github.repository }}:${{ github.sha }}
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "image=$IMAGE"
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ steps.image_name.outputs.image }} app
+
+      - name: Push Docker image
+        run: |
+          docker push ${{ steps.image_name.outputs.image }}
+
+  deploy_app:
+    name: Deploy APP
+    runs-on: ubuntu-24.04
+    environment: ${{ 'optimy' }}
+    needs: [build_docker_image]
+    outputs:
+      alb_dns: ${{ steps.alb_dns.outputs.ALB_URL }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get AWS credentials
+        id: creds
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE}}
+
+      - name: Deploy CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name $PROJECT_NAME \
+            --template-file infra/infra.yaml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides \
+              ContainerImage=${{ needs.build_docker_image.outputs.image }} \
+              DBUsername=${{ secrets.DB_USERNAME }}  \
+              DBPassword=${{ secrets.DB_PASSWORD }} \
+              DBName=${{ secrets.DB_NAME }} \
+              AWSRegion=${{ vars.AWS_REGION }} \
+              GHTokenArn=${{ secrets.GH_TOKEN_ARN }}
+
+      - name: Get ALB DNS name
+        id: alb_dns
+        run: |
+          ALB_URL=$(aws cloudformation describe-stacks \
+            --stack-name $PROJECT_NAME \
+            --query "Stacks[0].Outputs[?OutputKey=='ALBDNS'].OutputValue" \
+            --output text)
+          echo "ALB_URL=$ALB_URL" >> $GITHUB_OUTPUT
+          echo "ALB URL: $ALB_URL"
+
+  test_app:
+    name: Test APP
+    runs-on: ubuntu-24.04
+    environment: ${{ 'optimy' }}
+    needs: [deploy_app]
+
+    env:
+      APP_URL: ${{ needs.deploy_app.outputs.alb_dns }}
+
+    steps:
+      - name: Call the application
+        run: |
+          echo "Testing $APP_URL..."
+          curl -s --fail "$APP_URL" | tee output.html
+
+      - name: Check content
+        run: |
+          if grep -q "Hello Optimy!" output.html; then
+            echo "Test passed!"
+          else
+            echo "Test failed!"
+            exit 1
+          fi
