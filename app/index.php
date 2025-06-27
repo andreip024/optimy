@@ -26,7 +26,7 @@ if ($tableCheckResult->num_rows === 0) {
 
     if ($writer_conn->query($createQuery) === TRUE) {
         echo "Table 'test' created successfully.<br>";
-        $writer_conn->query("INSERT INTO test (name) VALUES ('Hello Optimy 2!')");
+        $writer_conn->query("INSERT INTO test (name) VALUES ('Hello Optimy!')");
     } else {
         echo "Error creating table: " . $writer_conn->error;
     }
