@@ -37,7 +37,7 @@ $result = $reader_conn->query("SELECT name FROM test");
 if ($result && $row = $result->fetch_assoc()) {
     echo $row['name'];
 } else {
-    echo "No data found.";
+    echo "No data found";
 }
 
 $writer_conn->close();
